@@ -103,6 +103,10 @@ enum {
   SchemeTag3,
   SchemeTag4,
   SchemeTag5,
+  SchemeTag6,
+  SchemeTag7,
+  SchemeTag8,
+  SchemeTag9,
   SchemeLayout,
   TabSel,
   TabNorm,
@@ -320,6 +324,7 @@ static void seturgent(Client *c, int urg);
 static void show(Client *c);
 static void showhide(Client *c);
 static void showtagpreview(int tag);
+static void sigchld(int unused);
 static void spawn(const Arg *arg);
 static void switchtag(void);
 static Monitor *systraytomon(Monitor *m);
@@ -328,6 +333,7 @@ static void tag(const Arg *arg);
 static void tagmon(const Arg *arg);
 static void togglebar(const Arg *arg);
 static void togglefloating(const Arg *arg);
+static void togglescratch(const Arg *arg);
 static void togglefullscr(const Arg *arg);
 static void toggletag(const Arg *arg);
 static void toggleview(const Arg *arg);
@@ -454,6 +460,8 @@ struct Pertag {
 	const Layout *ltidxs[LENGTH(tags) + 1][2]; /* matrix of tags and layouts indexes  */
 	int showbars[LENGTH(tags) + 1]; /* display bar for the current tag */
 };
+
+static unsigned int scratchtag = 1 << LENGTH(tags);
 
 /* compile-time check if all tags fit into an unsigned int bit array. */
 struct NumTags {
@@ -655,7 +663,7 @@ void buttonpress(XEvent *e) {
   else
          click = ClkWinTitle;
   }
-    	
+
 	if(ev->window == selmon->tabwin) {
 		i = 0; x = 0;
 		for(c = selmon->clients; c; c = c->next){
@@ -1557,9 +1565,9 @@ geticonprop(Window win, unsigned int *picw, unsigned int *pich)
 	unsigned long n, extra, *p = NULL;
 	Atom real;
 
-	if (XGetWindowProperty(dpy, win, netatom[NetWMIcon], 0L, LONG_MAX, False, AnyPropertyType, 
+	if (XGetWindowProperty(dpy, win, netatom[NetWMIcon], 0L, LONG_MAX, False, AnyPropertyType,
 						   &real, &format, &n, &extra, (unsigned char **)&p) != Success)
-		return None; 
+		return None;
 	if (n == 0 || format != 32) { XFree(p); return None; }
 
 	unsigned long *bstp = NULL;
@@ -1893,7 +1901,7 @@ int gettextprop(Window w, Atom atom, char *text, unsigned int size) {
     strncpy(text, (char *)name.value, size - 1);
   } else if (XmbTextPropertyToTextList(dpy, &name, &list, &n) >= Success && n > 0 && *list) {
 	  strncpy(text, *list, size - 1);
-	  XFreeStringList(list);  
+	  XFreeStringList(list);
   }
   text[size - 1] = '\0';
   XFree(name.value);
@@ -1922,26 +1930,17 @@ void grabbuttons(Client *c, int focused) {
 void grabkeys(void) {
   updatenumlockmask();
   {
-    unsigned int i, j, k;
+    unsigned int i, j;
     unsigned int modifiers[] = {0, LockMask, numlockmask,
                                 numlockmask | LockMask};
-    int start, end, skip;
-    KeySym *syms;
+    KeyCode code;
+
     XUngrabKey(dpy, AnyKey, AnyModifier, root);
-    XDisplayKeycodes(dpy, &start, &end);
-    syms = XGetKeyboardMapping(dpy, start, end - start + 1, &skip);
-    if (!syms)
-      return;
-    for (k = start; k <= end; k++)
-      for (i = 0; i < LENGTH(keys); i++)
-	/* skip modifier codes, we do that ourselves */
-	if (keys[i].keysym == syms[(k - start) * skip])
-	  for (j = 0; j < LENGTH(modifiers); j++)
-	    XGrabKey(dpy, k,
-		     keys[i].mod | modifiers[j],
-		     root, True,
-		     GrabModeAsync, GrabModeAsync);
-    XFree(syms);
+    for (i = 0; i < LENGTH(keys); i++)
+      if ((code = XKeysymToKeycode(dpy, keys[i].keysym)))
+        for (j = 0; j < LENGTH(modifiers); j++)
+          XGrabKey(dpy, code, keys[i].mod | modifiers[j], root, True,
+                   GrabModeAsync, GrabModeAsync);
   }
 }
 
@@ -2556,6 +2555,14 @@ void resizeclient(Client *c, int x, int y, int w, int h) {
 	if (c->beingmoved)
 		return;
 
+	selmon->tagset[selmon->seltags] &= ~scratchtag;
+	if (!strcmp(c->name, scratchpadname)) {
+		c->mon->tagset[c->mon->seltags] |= c->tags = scratchtag;
+		c->isfloating = True;
+		c->x = c->mon->wx + (c->mon->ww / 2 - WIDTH(c) / 2);
+		c->y = c->mon->wy + (c->mon->wh / 2 - HEIGHT(c) / 2);
+	}
+
 	wc.border_width = c->bw;
   XConfigureWindow(dpy, c->win, CWX | CWY | CWWidth | CWHeight | CWBorderWidth,
                    &wc);
@@ -2885,15 +2892,9 @@ void setup(void) {
   int i;
   XSetWindowAttributes wa;
   Atom utf8string;
-  struct sigaction sa;
-  /* do not transform children into zombies when they terminate */
-  sigemptyset(&sa.sa_mask);
-  sa.sa_flags = SA_NOCLDSTOP | SA_NOCLDWAIT | SA_RESTART;
-  sa.sa_handler = SIG_IGN;
-  sigaction(SIGCHLD, &sa, NULL);
 
-  /* clean up any zombies (inherited from .xinitrc etc) immediately */
-  while (waitpid(-1, NULL, WNOHANG) > 0);
+  /* clean up any zombies immediately */
+  sigchld(0);
 
   /* init screen */
   screen = DefaultScreen(dpy);
@@ -3049,16 +3050,20 @@ showtagpreview(int tag)
 }
 
 
+void sigchld(int unused) {
+  if (signal(SIGCHLD, sigchld) == SIG_ERR)
+	  die("can't install SIGCHLD handler:");
+  while (0 < waitpid(-1, NULL, WNOHANG))
+    ;
+}
+
+
 void spawn(const Arg *arg) {
-  struct sigaction sa;
+  selmon->tagset[selmon->seltags] &= ~scratchtag;
   if (fork() == 0) {
     if (dpy)
       close(ConnectionNumber(dpy));
     setsid();
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    sa.sa_handler = SIG_DFL;
-    sigaction(SIGCHLD, &sa, NULL);
     execvp(((char **)arg->v)[0], (char **)arg->v);
     die("dwm: execvp '%s' failed:", ((char **)arg->v)[0]);
   }
@@ -3327,6 +3332,28 @@ void updatebars(void) {
 	XMapRaised(dpy, m->tabwin);
     XSetClassHint(dpy, m->barwin, &ch);
   }
+}
+
+void
+togglescratch(const Arg *arg)
+{
+	Client *c;
+	unsigned int found = 0;
+
+	for (c = selmon->clients; c && !(found = c->tags & scratchtag); c = c->next);
+	if (found) {
+		unsigned int newtagset = selmon->tagset[selmon->seltags] ^ scratchtag;
+		if (newtagset) {
+			selmon->tagset[selmon->seltags] = newtagset;
+			focus(NULL);
+			arrange(selmon);
+		}
+		if (ISVISIBLE(c)) {
+			focus(c);
+			restack(selmon);
+		}
+	} else
+		spawn(arg);
 }
 
 void

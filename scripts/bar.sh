@@ -53,10 +53,29 @@ recording_icon() {
     printf "^b$black^^c$red^ %s " $(cat /tmp/recordingicon)
 }
 
+nettraf_update() {
+    sum=0
+    for arg; do
+        read -r i < "$arg"
+        sum=$(( sum + i ))
+    done
+    cache=/tmp/${1##*/}
+    [ -f "$cache" ] && read -r old < "$cache" || old=0
+    printf %d\\n "$sum" > "$cache"
+    printf %d\\n $(( sum - old ))
+}
+
+nettraf() {
+    rx=$(nettraf_update /sys/class/net/[ew]*/statistics/rx_bytes)
+    tx=$(nettraf_update /sys/class/net/[ew]*/statistics/tx_bytes)
+
+    printf "^c$green^%4sB^c$red^ %4sB\\n" $(numfmt --to=iec $rx $tx)
+}
+
 while true; do
 
 	# [ $interval = 0 ] || [ $(($interval % 3600)) = 0 ] && updates=$(pkg_updates)
 	# interval=$((interval + 1))
 
-    sleep 1 && xsetroot -name "$(recording_icon) $(volume) $(brightness) $(cpu) $(mem) $(wlan) $(clock) $(kb_lang)"
+    sleep 1 && xsetroot -name "$(recording_icon) $(volume) $(brightness) $(cpu) $(mem) $(wlan) $(nettraf) $(clock) $(kb_lang)"
 done

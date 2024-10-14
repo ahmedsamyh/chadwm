@@ -72,10 +72,15 @@ nettraf() {
     printf "^c$green^%4sB^c$red^ %4sB\\n" $(numfmt --to=iec $rx $tx)
 }
 
+cpu_temp() {
+    printf "^c$black^^b$red^  "
+    printf "^b$black^^c$red^ $(sensors | awk '/Core 0/ {print $3}' | tr -d '+-')"
+}
+
 while true; do
 
 	# [ $interval = 0 ] || [ $(($interval % 3600)) = 0 ] && updates=$(pkg_updates)
 	# interval=$((interval + 1))
 
-    sleep 1 && xsetroot -name "$(recording_icon) $(volume) $(brightness) $(cpu) $(mem) $(wlan) $(nettraf) $(clock) $(kb_lang)"
+    sleep 1 && xsetroot -name "$(recording_icon) $(volume) $(brightness) $(cpu) $(cpu_temp) $(mem) $(wlan) $(nettraf) $(clock) $(kb_lang)"
 done
